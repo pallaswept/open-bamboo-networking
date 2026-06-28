@@ -8,12 +8,6 @@ extern std::string g_connect_redirect_so_path;
 extern int g_fake_printer_port;
 extern std::string g_plugin_path_for_home;
 
-// Probe local plugin paths; returns path or empty.
-std::string probe_plugin_path();
-
-// Download plugin from Bambu CDN if not cached; returns path or empty.
-std::string download_plugin_if_needed();
-
 // Locate slicer cert and write it to a tmpdir; returns tmpdir path or empty.
 // cert_override: explicit path (from --cert); empty = auto-search relative to plugin.
 std::string write_cert_tmpdir(pid_t pid, const std::string& plugin_path,

@@ -231,7 +231,7 @@ void FakePrinterBroker::handle_client(SSL* ssl) {
         } else if (type == 3 && conn_sent) {  // PUBLISH from daemon
             if (body.size() < 2) continue;
             uint16_t tlen = ((uint16_t)body[0] << 8) | body[1];
-            if (2 + tlen > body.size()) continue;
+            if (static_cast<size_t>(2 + tlen) > body.size()) continue;
             std::string topic(body.begin() + 2, body.begin() + 2 + tlen);
             if (topic == security_topic && !cert_sent) {
                 std::string pem_json;

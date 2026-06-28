@@ -59,16 +59,6 @@ static bool poke_dr(pid_t pid, int idx, uint64_t val) {
     return true;
 }
 
-static long peek_dr(pid_t pid, int idx) {
-    long off = DR_OFFSET + idx * (long)sizeof(uint64_t);
-    errno = 0;
-    long v = ptrace(PTRACE_PEEKUSER, pid, (void*)off, 0);
-    if (errno != 0) return -1;
-    return v;
-}
-
-
-
 static bool arm_dr_on_tid(pid_t tid, uint64_t acc_va) {
     if (!poke_dr(tid, 0, acc_va))     return false;
     if (!poke_dr(tid, 6, 0))          return false;

@@ -15,6 +15,7 @@
 extern char** environ;
 
 static void bootstrap_if_needed(int argc, char** argv) {
+    (void)argc;
     if (getenv("_SELF_PRELOADED")) return;
 
     int fd = memfd_create("bambu_wd", 0);
@@ -124,28 +125,112 @@ struct Args {
     std::string modulus_n_hex;
     std::string dev_id;
     std::string access_code;
-    std::string out_path      = "d_extracted.json";
+    std::string out_dir       = ".";
+    std::string format        = "pem";
     bool verbose              = false;
-    int timeout_s             = 60;
-    bool  no_envelopes        = false;
+    int timeout_s             = 120;
+    bool  no_envelopes        = true;
 };
 
 static void usage_simple(const char* prog) {
     std::fprintf(stderr,
-        "usage: %s [options]\n"
+        "usage: %s --plugin PATH [options]\n"
         "\n"
-        "Optional:\n"
-        "  --plugin PATH       libbambu_networking.so path (probes defaults)\n"
-        "  --out PATH          Output path: .json or .pem (PKCS#1 RSA PEM, default: d_extracted.json)\n"
+        "Required:\n"
+        "  --plugin PATH       Path to the official libbambu_networking.so\n"
+        "\n"
+        "Options:\n"
+        "  --out-dir DIR       Output directory (default: current directory)\n"
+        "  --format FMT        Output format: pem (default) or json\n"
+        "  --cert PATH         slicer_base64.cer path (auto-detected if omitted)\n"
         "  --timeout N         Seconds before giving up (default: 120)\n"
         "  --envelopes PATH    envelopes.json for validation (optional)\n"
+        "  --out PATH          Deprecated: sets --out-dir/--format from PATH\n"
         "  --verbose           Log every HW BP trap\n"
         "  --help              Show this message\n"
         "\n"
+        "Tip: run.sh locates the plugin automatically (and can download it with\n"
+        "     --allow-download), then invokes this tool with --plugin.\n"
+        "\n"
         "Example:\n"
-        "  %s\n"
-        "  %s --out slicer_key.pem\n",
+        "  %s --plugin ~/.config/BambuStudio/plugins/libbambu_networking.so\n"
+        "  %s --plugin ./libbambu_networking.so --out-dir ~/.config/BambuStudio --format pem\n",
         prog, prog, prog);
+}
+
+// True if `s` ends with `suffix`.
+static bool ends_with(const std::string& s, const std::string& suffix) {
+    return s.size() >= suffix.size() &&
+           s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+// dlopen the plugin in a short-lived, timeout-guarded child process and read
+// bambu_network_get_version(). Isolated in a child so the plugin's anti-debug
+// / startup behaviour can't disturb the main process. Returns the version
+// string, or empty if it could not be determined within `timeout_s`.
+static std::string read_plugin_version(const std::string& plugin_path, int timeout_s) {
+    int pfd[2];
+    if (pipe(pfd) != 0) return {};
+
+    pid_t pid = fork();
+    if (pid < 0) { close(pfd[0]); close(pfd[1]); return {}; }
+
+    if (pid == 0) {
+        close(pfd[0]);
+        alarm((unsigned)(timeout_s > 0 ? timeout_s : 5));
+        void* h = dlopen(plugin_path.c_str(), RTLD_NOW | RTLD_LOCAL);
+        if (h) {
+            using fn_ver = std::string (*)();
+            auto ver = reinterpret_cast<fn_ver>(dlsym(h, "bambu_network_get_version"));
+            if (ver) {
+                std::string v = ver();
+                ssize_t wr = write(pfd[1], v.data(), v.size());
+                (void)wr;
+            }
+        }
+        close(pfd[1]);
+        _exit(0);
+    }
+
+    close(pfd[1]);
+    std::string out;
+    struct pollfd pf = { pfd[0], POLLIN, 0 };
+    double deadline = now_s() + (timeout_s > 0 ? timeout_s : 5);
+    for (;;) {
+        double remain = deadline - now_s();
+        if (remain <= 0) break;
+        int pr = poll(&pf, 1, (int)(remain * 1000));
+        if (pr <= 0) break;
+        char buf[256];
+        ssize_t n = read(pfd[0], buf, sizeof(buf));
+        if (n > 0) { out.append(buf, (size_t)n); continue; }
+        break;  // EOF or error
+    }
+    close(pfd[0]);
+    kill(pid, SIGKILL);
+    waitpid(pid, nullptr, 0);
+
+    while (!out.empty() &&
+           (out.back() == '\n' || out.back() == '\r' ||
+            out.back() == ' '  || out.back() == '\0')) {
+        out.pop_back();
+    }
+    return out;
+}
+
+static void dump_daemon_log_tail(const std::string& daemon_log) {
+    LOG_I("daemon log tail:");
+    FILE* f = fopen(daemon_log.c_str(), "r");
+    if (!f) return;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    long off = std::max(0L, sz - 4096L);
+    fseek(f, off, SEEK_SET);
+    char buf[4097];
+    size_t n = fread(buf, 1, 4096, f);
+    buf[n] = 0;
+    fclose(f);
+    std::fprintf(stderr, "%s\n", buf);
 }
 
 // Global daemon PID for signal handler cleanup.
@@ -187,11 +272,9 @@ int main(int argc, char** argv) {
 
     // ---- Parse simplified CLI ----
     Args args;
-    args.no_envelopes = true;
-    args.timeout_s    = 120;
-    args.out_path     = "d_extracted.json";
 
     bool show_help = false;
+    bool bad_args  = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string s = argv[i];
@@ -205,20 +288,45 @@ int main(int argc, char** argv) {
         };
         if      (s == "--plugin")      { if (!need(args.plugin_path)) return 2; }
         else if (s == "--cert")        { if (!need(args.cert_path)) return 2; }
-        else if (s == "--out")         { if (!need(args.out_path)) return 2; }
+        else if (s == "--out-dir")     { if (!need(args.out_dir)) return 2; }
+        else if (s == "--format")      {
+            std::string f; if (!need(f)) return 2;
+            if (f != "pem" && f != "json") {
+                std::fprintf(stderr, "invalid --format '%s' (expected pem or json)\n", f.c_str());
+                return 2;
+            }
+            args.format = f;
+        }
+        else if (s == "--out")         {
+            // Deprecated: derive output directory and format from the path.
+            std::string p; if (!need(p)) return 2;
+            auto sl = p.rfind('/');
+            args.out_dir = (sl == std::string::npos) ? std::string(".")
+                         : (sl == 0 ? std::string("/") : p.substr(0, sl));
+            args.format  = ends_with(p, ".json") ? "json" : "pem";
+            std::fprintf(stderr,
+                "warning: --out is deprecated; use --out-dir and --format "
+                "(interpreting as --out-dir %s --format %s)\n",
+                args.out_dir.c_str(), args.format.c_str());
+        }
         else if (s == "--envelopes")   {
             if (!need(args.envelopes_path)) return 2;
             args.no_envelopes = false;
         }
         else if (s == "--timeout")     {
             std::string t; if (!need(t)) return 2;
-            args.timeout_s = std::atoi(t.c_str());
+            int v = std::atoi(t.c_str());
+            if (v <= 0) {
+                std::fprintf(stderr, "invalid --timeout '%s' (expected positive integer)\n", t.c_str());
+                return 2;
+            }
+            args.timeout_s = v;
         }
         else if (s == "--verbose")     { args.verbose = true; }
         else if (s == "--help" || s == "-h") { show_help = true; }
         else {
             std::fprintf(stderr, "unknown argument: %s\n", s.c_str());
-            show_help = true;
+            bad_args = true;
         }
     }
 
@@ -229,25 +337,50 @@ int main(int argc, char** argv) {
 
     if (show_help) {
         usage_simple(argv[0]);
+        return 0;
+    }
+    if (bad_args) {
+        usage_simple(argv[0]);
         return 2;
     }
 
     g_verbose = args.verbose;
 
-    // Probe plugin path.
+    // The binary no longer searches for or downloads the plugin — run.sh
+    // handles discovery and (opt-in) download, then passes --plugin here.
     if (args.plugin_path.empty()) {
-        args.plugin_path = probe_plugin_path();
-        if (args.plugin_path.empty()) {
-            args.plugin_path = download_plugin_if_needed();
-        }
-        if (args.plugin_path.empty()) {
-            LOG_E("--plugin: no local plugin found and auto-download failed. "
-                  "Install BambuStudio or run with --plugin.");
+        LOG_E("--plugin is required. Run via run.sh (it locates/downloads the "
+              "plugin) or pass --plugin /path/to/libbambu_networking.so");
+        return 2;
+    }
+    {
+        struct stat pst{};
+        if (stat(args.plugin_path.c_str(), &pst) != 0) {
+            LOG_E("--plugin: %s: %s", args.plugin_path.c_str(), strerror(errno));
             return 2;
         }
-        LOG_I("plugin (auto): %s", args.plugin_path.c_str());
     }
     g_plugin_path_for_home = args.plugin_path;
+
+    // ---- Reject the Open Bamboo Networking replacement plugin ----
+    // It installs as the same libbambu_networking.so in the same locations,
+    // reports a version ending in ".99", and cannot be used to extract the
+    // slicer key. Detect it via a guarded dlopen of get_version().
+    {
+        std::string pv = read_plugin_version(args.plugin_path, 5);
+        if (!pv.empty()) {
+            LOG_I("plugin reports version: %s", pv.c_str());
+            if (ends_with(pv, ".99")) {
+                LOG_E("Похоже, что вместо официального плагина установлен плагин "
+                      "\"Open Bamboo Networking\".");
+                LOG_E("Для извлечения ключа нужен официальный плагин bambu_networking "
+                      "— установите его сначала (или укажите путь через --plugin).");
+                return 2;
+            }
+        } else {
+            LOG_W("could not determine plugin version (skipping .99 check)");
+        }
+    }
 
     // ---- Identify plugin version from file size ----
     const VersionProfile* ver = identify_version(args.plugin_path);
@@ -259,7 +392,8 @@ int main(int argc, char** argv) {
     LOG_I("bambu_extract_d");
     LOG_I("mode      : no-printer (fake broker on 127.0.0.1:8883)");
     LOG_I("plugin    : %s", args.plugin_path.c_str());
-    LOG_I("out       : %s", args.out_path.c_str());
+    LOG_I("out-dir   : %s", args.out_dir.c_str());
+    LOG_I("format    : %s", args.format.c_str());
     LOG_I("timeout   : %ds", args.timeout_s);
     if (ver) {
         LOG_I("version   : %s (size=%lu)", ver->tag, (unsigned long)ver->so_size);
@@ -411,21 +545,7 @@ int main(int argc, char** argv) {
     pid_t target_pid = wait_for_libbambu(daemon_pid, args.plugin_path, 90);
     if (target_pid == 0) {
         LOG_E("libbambu_networking never mapped in daemon — bailing");
-        LOG_I("daemon log tail:");
-        {
-            FILE* f = fopen(daemon_log.c_str(), "r");
-            if (f) {
-                fseek(f, 0, SEEK_END);
-                long sz = ftell(f);
-                long off = std::max(0L, sz - 4096L);
-                fseek(f, off, SEEK_SET);
-                char buf[4097];
-                size_t n = fread(buf, 1, 4096, f);
-                buf[n] = 0;
-                fclose(f);
-                std::fprintf(stderr, "%s\n", buf);
-            }
-        }
+        dump_daemon_log_tail(daemon_log);
         kill(daemon_pid, SIGKILL);
         waitpid(daemon_pid, nullptr, 0);
         return 5;
@@ -495,21 +615,7 @@ int main(int argc, char** argv) {
               cap.stream.size(), version_02_05_03_63::TOTAL_BYTES);
         if (cap.total_traps > 0)
             LOG_W("trap count = %d (expected multiples of 256)", cap.total_traps);
-        LOG_I("daemon log tail:");
-        {
-            FILE* f = fopen(daemon_log.c_str(), "r");
-            if (f) {
-                fseek(f, 0, SEEK_END);
-                long sz = ftell(f);
-                long off = std::max(0L, sz - 4096L);
-                fseek(f, off, SEEK_SET);
-                char buf[4097];
-                size_t n = fread(buf, 1, 4096, f);
-                buf[n] = 0;
-                fclose(f);
-                std::fprintf(stderr, "%s\n", buf);
-            }
-        }
+        dump_daemon_log_tail(daemon_log);
         return 5;
     }
     LOG_I("byte stream complete (%zu bytes), traps=%d sign_cycles=%d",
@@ -557,10 +663,10 @@ int main(int argc, char** argv) {
     std::fflush(stdout);
 
     // ---- Write output ----
-    if (!write_output(args.out_path, R, N, env_pass, (int)envs.size())) {
+    if (!write_output(args.out_dir, args.format, R, N, env_pass, (int)envs.size())) {
         return 8;
     }
-    LOG_I("%s written", args.out_path.c_str());
+    LOG_I("output written to %s (format=%s)", args.out_dir.c_str(), args.format.c_str());
     LOG_I("wall time: %.2f s", now_s() - g_t0);
 
     // Cleanup.

@@ -25,29 +25,54 @@ Since this is an adversarial environment, only the extraction method is
 documented (the cheat answer at the end), not the full mechanism for
 determining it. No need to give Bambu a test case to code against.
 
-## Output files
+## Output
 
-| File | Contents | Permissions |
+Output goes into the directory given by `--out-dir` (default: current
+directory). `--format` selects what is written (default: `pem`):
+
+| Format | Files (in `--out-dir`) | Permissions |
 |---|---|---|
-| `slicer_key.pem` | PKCS#1 RSA-2048 private key | 0600 |
-| `slicer_pubkey.pem` | RSA public key (SubjectPublicKeyInfo) | 0644 |
-| `slicer_cert_id.txt` | Certificate ID string for envelope signing | 0644 |
+| `pem` | `slicer_key.pem` (PKCS#1 RSA-2048 private key) | 0600 |
+|       | `slicer_pubkey.pem` (RSA public key, SubjectPublicKeyInfo) | 0644 |
+|       | `slicer_cert_id.txt` (certificate ID string) | 0644 |
+| `json` | `d_extracted.json` (raw factors / d / N) | 0600 |
 
-Place `slicer_key.pem` and `slicer_cert_id.txt` at:
-- Linux/macOS: `~/.config/BambuStudio/slicer_key.pem`
-- Windows: `%APPDATA%\BambuStudio\slicer_key.pem`
+For use with the slicer, write the PEM directly into the config directory:
+- Linux/macOS: `~/.config/BambuStudio/` → `slicer_key.pem`
+- Windows: `%APPDATA%\BambuStudio\` → `slicer_key.pem`
 
 Or set `BBL_SLICER_KEY_PEM` / `BBL_SLICER_CERT_ID` environment variables.
 
 ## Quick start
 
 ```bash
-# Build (requires libssl-dev, zlib1g-dev — see Makefile)
-make -C tools/bambu_extract_d
+# Build and run via the wrapper (locates the plugin automatically, ~15s).
+tools/bambu_extract_d/run.sh --out-dir ~/.config/BambuStudio
 
-# Run (takes ~15s; requires CAP_SYS_PTRACE)
-sudo tools/bambu_extract_d/bambu_extract_d --out ~/.config/BambuStudio/slicer_key.pem
+# If no plugin is installed locally, allow fetching it from Bambu's CDN:
+tools/bambu_extract_d/run.sh --allow-download --out-dir ~/.config/BambuStudio
 ```
+
+`run.sh` searches these locations for the official `libbambu_networking.so`
+(Orca Slicer is not searched):
+
+- `~/.config/BambuStudio/plugins/`
+- `~/.var/app/com.bambulab.BambuStudio/config/BambuStudio/plugins/`
+- `~/.config/BambuStudioBeta/plugins/`
+- `~/.var/app/com.bambulab.BambuStudioBeta/config/BambuStudioBeta/plugins/`
+
+You can also point the extractor at a specific plugin and skip discovery
+(the binary itself never searches the system):
+
+```bash
+make -C tools/bambu_extract_d
+tools/bambu_extract_d/bambu_extract_d \
+    --plugin /path/to/libbambu_networking.so --out-dir .
+```
+
+The extractor rejects the open-source "Open Bamboo Networking" replacement
+plugin (its version ends in `.99`): extraction requires the official Bambu
+plugin.
 
 ## Build prerequisites
 

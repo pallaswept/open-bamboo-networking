@@ -229,6 +229,15 @@ bool write_json_output(const std::string& path,
 
 }  // namespace
 
+static void chown_to_caller(const std::string& path) {
+    const char* uid_s = std::getenv("SUDO_UID");
+    const char* gid_s = std::getenv("SUDO_GID");
+    if (!uid_s || !gid_s) return;
+    uid_t uid = (uid_t)std::atoi(uid_s);
+    gid_t gid = (gid_t)std::atoi(gid_s);
+    chown(path.c_str(), uid, gid);
+}
+
 bool write_output(const std::string& out_dir, const std::string& format,
                   const DRecon& R, const bn::BigInt& N,
                   int env_pass, int env_total,
@@ -237,10 +246,26 @@ bool write_output(const std::string& out_dir, const std::string& format,
         LOG_E("mkdir(%s): %s", out_dir.c_str(), strerror(errno));
         return false;
     }
+    chown_to_caller(out_dir);
 
-    if (format == "json")
-        return write_json_output(out_dir + "/d_extracted.json", R, N,
-                                 env_pass, env_total);
+    bool ok;
+    if (format == "json") {
+        ok = write_json_output(out_dir + "/d_extracted.json", R, N,
+                               env_pass, env_total);
+    } else {
+        ok = write_pem_output(out_dir, R, N, cert_id);
+    }
 
-    return write_pem_output(out_dir, R, N, cert_id);
+    if (ok) {
+        // Fix ownership of output files when running under sudo.
+        std::string files[] = {
+            out_dir + "/slicer_key.pem",
+            out_dir + "/slicer_pubkey.pem",
+            out_dir + "/slicer_cert_id.txt",
+            out_dir + "/d_extracted.json",
+        };
+        for (const auto& f : files)
+            chown_to_caller(f);
+    }
+    return ok;
 }

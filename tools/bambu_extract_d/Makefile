@@ -17,14 +17,13 @@ SRCS = main.cpp \
        bigint.cpp \
        envelope.cpp \
        capture.cpp \
-       fake_broker.cpp \
        reconstruct.cpp \
        output.cpp \
        daemon.cpp \
        vendored/BigIntModExp.cpp \
        vendored/mqtt_mini_broker.cpp
 
-EMBED_HEADERS = daemon_embed.h connect_redirect_embed.h watchdog_defeat_embed.h
+EMBED_HEADERS = daemon_embed.h watchdog_defeat_embed.h
 
 HEADERS = logging.h \
           version.h \
@@ -33,7 +32,6 @@ HEADERS = logging.h \
           capture.h \
           reconstruct.h \
           output.h \
-          fake_broker.h \
           daemon.h
 
 .PHONY: all clean
@@ -42,16 +40,6 @@ all: bambu_extract_d
 
 bambu_extract_d: $(SRCS) $(EMBED_HEADERS) $(HEADERS)
 	$(CXX) $(CXXFLAGS) -o $@ $(SRCS) $(LDFLAGS)
-
-# connect_redirect.so is built from source in this repo.
-build/connect_redirect.so: connect_redirect.c | build
-	$(CC) -shared -fPIC -O2 -nostartfiles -o $@ $< -ldl -lssl
-
-connect_redirect_embed.h: build/connect_redirect.so
-	xxd -i $< \
-	  | sed 's/^unsigned char build_connect_redirect_so/static unsigned char connect_redirect_embed_so/' \
-	  | sed 's/^unsigned int  *build_connect_redirect_so_len/static unsigned int  connect_redirect_embed_so_len/' \
-	  > $@
 
 build/daemon/bambu-daemon: daemon/CMakeLists.txt | build
 	cmake -S daemon -B build/daemon -DCMAKE_BUILD_TYPE=Release \
@@ -79,4 +67,4 @@ build:
 clean:
 	rm -f bambu_extract_d
 	rm -rf build
-	rm -f connect_redirect_embed.h daemon_embed.h watchdog_defeat_embed.h
+	rm -f daemon_embed.h watchdog_defeat_embed.h

@@ -106,7 +106,6 @@ static void bootstrap_if_needed(int argc, char** argv) {
 #include "capture.h"
 #include "reconstruct.h"
 #include "output.h"
-#include "fake_broker.h"
 #include "daemon.h"
 
 // ===========================================================================
@@ -390,7 +389,7 @@ int main(int argc, char** argv) {
     }
 
     LOG_I("bambu_extract_d");
-    LOG_I("mode      : no-printer (fake broker on 127.0.0.1:8883)");
+    LOG_I("mode      : no-printer");
     LOG_I("plugin    : %s", args.plugin_path.c_str());
     LOG_I("out-dir   : %s", args.out_dir.c_str());
     LOG_I("format    : %s", args.format.c_str());
@@ -441,16 +440,6 @@ int main(int argc, char** argv) {
     } else {
         LOG_I("envelopes: none (validation skipped)");
     }
-
-    // ---- Start fake printer broker ----
-    LOG_I("starting fake TLS MQTT broker on 127.0.0.1:8883");
-    FakePrinterBroker fake_broker;
-    if (!fake_broker.start(args.dev_id)) {
-        LOG_E("failed to start fake printer broker on port 8883");
-        return 4;
-    }
-    g_connect_redirect_so_path = fake_broker.connect_redirect_so_path;
-    g_fake_printer_port = fake_broker.port;
 
     // ---- Write daemon binary to memfd ----
     std::string daemon_exe = write_daemon_memfd();
@@ -668,6 +657,9 @@ int main(int argc, char** argv) {
     }
     LOG_I("output written to %s (format=%s)", args.out_dir.c_str(), args.format.c_str());
     LOG_I("wall time: %.2f s", now_s() - g_t0);
+
+    // Dump daemon log for diagnostics.
+    dump_daemon_log_tail(daemon_log);
 
     // Cleanup.
     {

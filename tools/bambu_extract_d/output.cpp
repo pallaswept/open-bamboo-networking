@@ -13,6 +13,8 @@
 #include <openssl/core_names.h>
 #include <openssl/param_build.h>
 #include <openssl/encoder.h>
+#include <openssl/md5.h>
+#include "cert_id_table.h"
 
 std::string slurp(const std::string& path) {
     std::ifstream f(path);
@@ -121,20 +123,17 @@ bool encode_pkey_pem(EVP_PKEY* pkey, const std::string& path,
     return ok;
 }
 
-bool write_cert_id(const std::string& path) {
-    // NOTE: this is a fixed fallback cert-id string and may not match the
-    // certificate the recovered key was actually issued under. It is kept
-    // for backward compatibility with downstream tooling that expects the
-    // file to exist; treat it as a placeholder.
-    static const char kFallbackCertId[] =
-        "a4e8faaa1a38e3650a0ea590d192383f"
-        "CN=GLOF3813734089.bambulab.com";
+bool write_cert_id(const std::string& path, const std::string& cert_id) {
+    if (cert_id.empty()) {
+        LOG_W("cert_id unknown for this key; slicer_cert_id.txt not written");
+        return true;  // non-fatal
+    }
     int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
         LOG_W("could not write slicer_cert_id.txt: %s", strerror(errno));
         return false;
     }
-    std::string line = std::string(kFallbackCertId) + "\n";
+    std::string line = cert_id + "\n";
     bool ok = write(fd, line.data(), line.size()) == (ssize_t)line.size();
     close(fd);
     if (ok) LOG_I("slicer_cert_id.txt written: %s", path.c_str());
@@ -142,8 +141,32 @@ bool write_cert_id(const std::string& path) {
     return ok;
 }
 
+static std::string lookup_cert_id(EVP_PKEY* pkey) {
+    if (!pkey) return {};
+
+    unsigned char* der = nullptr;
+    int der_len = i2d_PrivateKey(pkey, &der);
+    if (der_len <= 0) return {};
+
+    unsigned char md[MD5_DIGEST_LENGTH];
+    MD5(der, (size_t)der_len, md);
+    OPENSSL_free(der);
+
+    char hex[MD5_DIGEST_LENGTH * 2 + 1];
+    for (int i = 0; i < MD5_DIGEST_LENGTH; i++)
+        snprintf(hex + i * 2, 3, "%02x", md[i]);
+
+    for (const auto& entry : kCertIdTable) {
+        if (std::strcmp(entry.key_md5, hex) == 0)
+            return entry.cert_id;
+    }
+    LOG_W("cert_id not found for key MD5 %s; add it to kCertIdTable in output.cpp", hex);
+    return {};
+}
+
 bool write_pem_output(const std::string& out_dir,
-                      const DRecon& R, const bn::BigInt& N) {
+                      const DRecon& R, const bn::BigInt& N,
+                      const std::string& cert_id) {
     EVP_PKEY* pkey = build_rsa_pkey(R, N);
     if (!pkey) return false;
 
@@ -162,7 +185,11 @@ bool write_pem_output(const std::string& out_dir,
         LOG_I("slicer_pubkey.pem written: %s", pubkey_path.c_str());
     }
 
-    if (ok) write_cert_id(cert_id_path);
+    // Resolve cert_id: use captured value, or lookup by key fingerprint.
+    std::string resolved_cert_id = cert_id;
+    if (resolved_cert_id.empty())
+        resolved_cert_id = lookup_cert_id(pkey);
+    if (ok) write_cert_id(cert_id_path, resolved_cert_id);
 
     EVP_PKEY_free(pkey);
     return ok;
@@ -204,7 +231,8 @@ bool write_json_output(const std::string& path,
 
 bool write_output(const std::string& out_dir, const std::string& format,
                   const DRecon& R, const bn::BigInt& N,
-                  int env_pass, int env_total) {
+                  int env_pass, int env_total,
+                  const std::string& cert_id) {
     if (mkdir(out_dir.c_str(), 0700) < 0 && errno != EEXIST) {
         LOG_E("mkdir(%s): %s", out_dir.c_str(), strerror(errno));
         return false;
@@ -214,5 +242,5 @@ bool write_output(const std::string& out_dir, const std::string& format,
         return write_json_output(out_dir + "/d_extracted.json", R, N,
                                  env_pass, env_total);
 
-    return write_pem_output(out_dir, R, N);
+    return write_pem_output(out_dir, R, N, cert_id);
 }

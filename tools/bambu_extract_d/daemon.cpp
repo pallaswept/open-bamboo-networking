@@ -1,6 +1,6 @@
 #include "daemon.h"
 #include "daemon_embed.h"       // daemon_embed_bin[] + daemon_embed_bin_len
-#include "capture.h"            // g_openat_notif_pipe_rd, g_connect_redirect_so_path etc.
+#include "capture.h"
 #include "logging.h"
 #include <cerrno>
 #include <cstdio>
@@ -19,8 +19,6 @@
 #include <unistd.h>
 
 // Globals defined here, declared extern in daemon.h.
-std::string g_connect_redirect_so_path;
-int g_fake_printer_port = 0;
 std::string g_plugin_path_for_home;
 
 static std::string find_slicer_cert(const std::string& plugin_path) {
@@ -385,18 +383,6 @@ pid_t launch_daemon(const std::string& daemon_exe,
         setenv("LD_LIBRARY_PATH", ldp.c_str(), 1);
     }
 
-    {
-        // The watchdog-defeat shim is already LD_PRELOAD'd globally from the
-        // Phase 0 bootstrap (see main.cpp); here we only add the connect()
-        // redirect that points the plugin at our fake broker.
-        const std::string& preload = g_connect_redirect_so_path;
-        if (!preload.empty()) setenv("LD_PRELOAD", preload.c_str(), 1);
-    }
-    if (g_fake_printer_port > 0) {
-        char port_str[16];
-        snprintf(port_str, sizeof(port_str), "%d", g_fake_printer_port);
-        setenv("FAKE_PRINTER_PORT", port_str, 1);
-    }
     setenv("WD_V2_EAT_SIGABRT",   "1", 1);
     setenv("WD_V2_NO_EXIT",       "1", 1);
     setenv("WD_V2_FAKE_TRACEME",  "1", 1);

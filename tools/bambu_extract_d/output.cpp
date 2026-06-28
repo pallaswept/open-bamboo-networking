@@ -13,7 +13,6 @@
 #include <openssl/core_names.h>
 #include <openssl/param_build.h>
 #include <openssl/encoder.h>
-#include <openssl/md5.h>
 #include "cert_id_table.h"
 
 std::string slurp(const std::string& path) {
@@ -148,12 +147,13 @@ static std::string lookup_cert_id(EVP_PKEY* pkey) {
     int der_len = i2d_PrivateKey(pkey, &der);
     if (der_len <= 0) return {};
 
-    unsigned char md[MD5_DIGEST_LENGTH];
-    MD5(der, (size_t)der_len, md);
+    unsigned char md[16];
+    unsigned int md_len = 0;
+    EVP_Digest(der, (size_t)der_len, md, &md_len, EVP_md5(), nullptr);
     OPENSSL_free(der);
 
-    char hex[MD5_DIGEST_LENGTH * 2 + 1];
-    for (int i = 0; i < MD5_DIGEST_LENGTH; i++)
+    char hex[33];
+    for (unsigned i = 0; i < md_len; i++)
         snprintf(hex + i * 2, 3, "%02x", md[i]);
 
     for (const auto& entry : kCertIdTable) {
@@ -235,7 +235,7 @@ static void chown_to_caller(const std::string& path) {
     if (!uid_s || !gid_s) return;
     uid_t uid = (uid_t)std::atoi(uid_s);
     gid_t gid = (gid_t)std::atoi(gid_s);
-    chown(path.c_str(), uid, gid);
+    if (chown(path.c_str(), uid, gid) < 0) { /* best-effort */ }
 }
 
 bool write_output(const std::string& out_dir, const std::string& format,

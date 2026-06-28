@@ -605,6 +605,7 @@ int main(int argc, char** argv) {
         if (cap.total_traps > 0)
             LOG_W("trap count = %d (expected multiples of 256)", cap.total_traps);
         dump_daemon_log_tail(daemon_log);
+        LOG_E("FAILED — capture incomplete");
         return 5;
     }
     LOG_I("byte stream complete (%zu bytes), traps=%d sign_cycles=%d",
@@ -656,7 +657,6 @@ int main(int argc, char** argv) {
         return 8;
     }
     LOG_I("output written to %s (format=%s)", args.out_dir.c_str(), args.format.c_str());
-    LOG_I("wall time: %.2f s", now_s() - g_t0);
 
     // Dump daemon log for diagnostics.
     dump_daemon_log_tail(daemon_log);
@@ -674,5 +674,6 @@ int main(int argc, char** argv) {
 
     (void)g_cleanup_pipe;  // suppress unused warning
 
+    LOG_I("SUCCESS — wall time: %.2f s", now_s() - g_t0);
     return 0;
 }
